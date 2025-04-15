@@ -1,0 +1,19 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+# Mode Switch Rule
+
+This rule enables different operating modes for the AI assistant.
+When referenced or triggered, the assistant will shift its behavior 
+according to the requested mode.
+
+Available modes:
+- arch: System-wide analysis, dependencies, patterns :reference [arch-rules.mdc](mdc:.cursor/rules/arch-rules.mdc)
+- dev: Implementation, code quality, error handling :reference [dev-rules.mdc](mdc:.cursor/rules/dev-rules.mdc)
+- qa: Test creation, edge cases, verification :reference
+- review: Code analysis, improvements, consistency
+- tpm: Product Feature development and documentation invokes 
+
+To activate a mode, use: [mode:name]
