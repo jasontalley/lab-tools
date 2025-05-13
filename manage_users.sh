@@ -40,7 +40,14 @@ log_message "Starting user management process..."
 OLD_IFS="$IFS"
 IFS=':'
 while read -r username sudo_privileges passwordless_sudo groups_str shell || [[ -n "$username" ]]; do
-    # Skip comments and empty lines
+    # Trim whitespace from all fields
+    username=$(echo "$username" | xargs)
+    sudo_privileges=$(echo "$sudo_privileges" | xargs)
+    passwordless_sudo=$(echo "$passwordless_sudo" | xargs)
+    groups_str=$(echo "$groups_str" | xargs)
+    shell=$(echo "$shell" | xargs)
+
+    # Skip comments and empty lines (check username again after xargs)
     if [[ "$username" =~ ^#.*$ || -z "$username" ]]; then
         continue
     fi
@@ -105,14 +112,34 @@ while read -r username sudo_privileges passwordless_sudo groups_str shell || [[ 
         temp_ifs="$IFS"
         IFS=','
         for group in $groups_str; do
-            if ! echo "$current_groups_list" | grep -q "^${group}$"; then
-                log_message "INFO: Adding $username to group $group."
-                usermod -aG "$group" "$username"
-                if [[ $? -ne 0 ]]; then
-                    log_message "WARNING: Failed to add $username to group $group."
-                fi
+            group=$(echo "$group" | xargs) # Trim whitespace for individual group names
+            if [[ -z "$group" ]]; then continue; fi
+
+            group_exists=false
+            if getent group "$group" >/dev/null; then
+                group_exists=true
             else
-                log_message "INFO: User $username is already in group $group."
+                log_message "INFO: Group '$group' does not exist. Attempting to create it."
+                groupadd "$group"
+                if [[ $? -eq 0 ]]; then
+                    log_message "INFO: Group '$group' created successfully."
+                    group_exists=true
+                else
+                    log_message "ERROR: Failed to create group '$group'. Cannot add '$username' to it."
+                    continue # Skip to the next group for this user
+                fi
+            fi
+
+            if $group_exists; then
+                if ! echo "$current_groups_list" | grep -q "^${group}$"; then
+                    log_message "INFO: Adding $username to group $group."
+                    usermod -aG "$group" "$username"
+                    if [[ $? -ne 0 ]]; then
+                        log_message "WARNING: Failed to add $username to group $group."
+                    fi
+                else
+                    log_message "INFO: User $username is already in group $group."
+                fi
             fi
         done
         IFS="$temp_ifs" # Restore IFS
