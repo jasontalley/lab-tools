@@ -9,8 +9,9 @@ log_error() { echo -e "\033[31m[ERROR] $1\033[0m"; }
 log_step() { echo -e "\n\033[34m--- $1 ---\033[0m"; }
 
 confirm_action() {
-    # If stdin is not a TTY (e.g. when run via curl|bash), default to 'No' (return 1)
-    # This prevents the script from hanging or looping on "Invalid input".
+    # If stdin is not a TTY (e.g. if someone accidentally runs via curl|bash),
+    # default to 'No' (return 1). This script, with the two-step approach,
+    # is intended for direct interactive execution.
     if ! [ -t 0 ]; then
         # log_warn "Non-interactive mode detected for prompt: '$1'. Defaulting to No."
         return 1 # Default to No
@@ -225,12 +226,20 @@ while true; do
         SSH_COMMAND="ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10"
     fi
 
-    if $SSH_COMMAND -T "$GITHUB_HOST"; then
-        log_info "Successfully authenticated with GitHub!"
+    # Capture the output of ssh -T, as it exits with 1 on success but prints a success message.
+    # We need to check stderr for the success message.
+    log_info "Running: $SSH_COMMAND -T $GITHUB_HOST"
+    SSH_OUTPUT=$($SSH_COMMAND -T "$GITHUB_HOST" 2>&1) 
+    # Print the output for the user to see what GitHub said
+    log_info "GitHub SSH Test Output:"
+    echo "$SSH_OUTPUT"
+
+    if echo "$SSH_OUTPUT" | grep -q "You've successfully authenticated"; then
+        log_info "Successfully authenticated with GitHub! (Verified by success message)"
         break
     else
         log_warn "---------------------------------------------------------------------"
-        log_warn "GitHub SSH Authentication Failed!"
+        log_warn "GitHub SSH Authentication Failed! (Success message not found in output)"
         log_warn "This usually means the public SSH key shown earlier was not correctly"
         log_warn "added to your GitHub account (https://github.com/settings/keys),"
         log_warn "or there was an issue with the SSH agent or host key verification."
