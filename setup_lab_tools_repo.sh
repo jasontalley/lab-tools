@@ -85,3 +85,32 @@ else
 fi
 
 log_step "3. Configuring SSH Agent and SSH Config" 
+
+log_step() { echo -e "\n\033[34m--- $1 ---\033[0m"; }
+
+confirm_action() {
+    # If stdin is not a TTY (e.g. when run via curl|bash), default to 'No' (return 1)
+    # This prevents the script from hanging or looping on "Invalid input".
+    if ! [ -t 0 ]; then
+        # log_warn "Non-interactive mode detected for prompt: '$1'. Defaulting to No."
+        return 1 # Default to No
+    fi
+
+    # Interactive mode (stdin is a TTY)
+    while true; do
+        read -r -p "$1 [y/N]: " response
+        case "$response" in
+            [yY][eE][sS]|[yY])
+                return 0 # Yes
+                ;;
+            [nN][oO]|[nN]|"") # No or empty string (default for interactive)
+                return 1 # No
+                ;;
+            *)
+                log_warn "Invalid input. Please enter 'y' or 'n'."
+                ;;
+        esac
+    done
+}
+
+REPO_URL="git@github.com:jasontalley/lab-tools.git" 
