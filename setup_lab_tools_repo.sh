@@ -33,3 +33,55 @@ $(ssh-add -L)"
         fi
     fi
 done 
+
+log_step "2. SSH Key Setup for GitHub"
+
+# Ensure .ssh directory exists and has correct permissions
+mkdir -p "$HOME/.ssh"
+chmod 700 "$HOME/.ssh"
+
+SHOULD_GENERATE_KEY=false # Default: do not generate a new key
+
+if [ -f "$SSH_KEY_PATH" ] && [ -f "${SSH_KEY_PATH}.pub" ]; then
+    log_info "SSH key pair ($SSH_KEY_PATH) already exists."
+    if confirm_action "Do you want to USE this existing key? (Answering 'n' will prompt to generate a new one)"; then
+        log_info "Will use the existing SSH key: $SSH_KEY_PATH."
+        SHOULD_GENERATE_KEY=false
+    else
+        log_warn "You chose NOT to use the existing key: $SSH_KEY_PATH."
+        if confirm_action "Do you want to GENERATE a NEW key pair? (This will overwrite the existing file if it has the same name)"; then
+            log_info "A new SSH key pair will be generated."
+            SHOULD_GENERATE_KEY=true
+        else
+            log_warn "You chose NOT to generate a new key either. Defaulting to attempt using the existing key: $SSH_KEY_PATH."
+            # This path means user said NO to using existing, and NO to generating new.
+            # Safest is to try and use what's there, or the script can't proceed with SSH.
+            SHOULD_GENERATE_KEY=false 
+        fi
+    fi
+else
+    log_info "SSH key pair $SSH_KEY_PATH not found or incomplete. A new key pair needs to be generated."
+    SHOULD_GENERATE_KEY=true
+fi
+
+if [ "$SHOULD_GENERATE_KEY" = true ]; then # String comparison, or use (( SHOULD_GENERATE_KEY )) for arithmetic if it were 0/1
+    log_info "Proceeding with SSH key generation for: $SSH_KEY_PATH"
+    # Remove old keys if they exist, as we are generating a new one.
+    rm -f "$SSH_KEY_PATH" "${SSH_KEY_PATH}.pub"
+    
+    # Simplified comment for ssh-keygen to minimize potential parsing issues with complex $(hostname) outputs
+    KEY_COMMENT="lab_tools_github_$(whoami)"
+    log_info "Generating new 4096-bit RSA SSH key. Press Enter to accept default file location and no passphrase (recommended for automated scripts)."
+    ssh-keygen -t rsa -b 4096 -f "$SSH_KEY_PATH" -N "" -C "$KEY_COMMENT"
+    if [ $? -ne 0 ]; then
+        log_error "SSH key generation failed."
+        exit 1
+    fi
+    log_info "New SSH key pair generated successfully: $SSH_KEY_PATH"
+    chmod 600 "$SSH_KEY_PATH"
+    chmod 644 "${SSH_KEY_PATH}.pub"
+else
+    log_info "Skipping SSH key generation. Using existing key: $SSH_KEY_PATH"
+fi
+
+log_step "3. Configuring SSH Agent and SSH Config" 
