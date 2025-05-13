@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Script to manage users based on a configuration file.
+# Script to manage users based on a configuration file or remove users.
 # This script should be run as root.
 
 USER_CONFIG_FILE="user_config.txt"
@@ -16,6 +16,57 @@ if [[ "$EUID" -ne 0 ]]; then
   log_message "ERROR: This script must be run as root."
   exit 1
 fi
+
+# --- User Removal Functionality ---
+remove_user() {
+    local user_to_remove="$1"
+
+    if [[ -z "$user_to_remove" ]]; then
+        log_message "ERROR: No username specified for removal."
+        echo "Usage: $0 --remove <username>"
+        exit 1
+    fi
+
+    # Safety check: prevent removal of critical users
+    if [[ "$user_to_remove" == "root" || "$user_to_remove" == "daemon" || "$user_to_remove" == "bin" || "$user_to_remove" == "sys" ]]; then
+        log_message "ERROR: Removal of critical system user '$user_to_remove' is not allowed."
+        exit 1
+    fi
+
+    log_message "Attempting to remove user: $user_to_remove"
+
+    if id "$user_to_remove" &>/dev/null; then
+        # Remove sudoers file if it exists
+        local sudoer_file="$SUDOERS_DIR/${user_to_remove}_sudo_access"
+        if [[ -f "$sudoer_file" ]]; then
+            log_message "INFO: Removing sudoers file $sudoer_file for user $user_to_remove."
+            rm -f "$sudoer_file"
+            if [[ $? -ne 0 ]]; then
+                log_message "WARNING: Failed to remove sudoers file $sudoer_file."
+            fi
+        fi
+
+        # Remove user
+        log_message "INFO: Removing user account $user_to_remove and their home directory."
+        userdel -r "$user_to_remove"
+        if [[ $? -eq 0 ]]; then
+            log_message "INFO: User $user_to_remove removed successfully."
+        else
+            log_message "ERROR: Failed to remove user $user_to_remove. They may have running processes or other issues."
+            exit 1 # Exit with error if userdel fails
+        fi
+    else
+        log_message "INFO: User $user_to_remove does not exist."
+    fi
+    exit 0 # Exit successfully after removal attempt
+}
+
+# --- Argument Parsing for remove ---
+if [[ "$1" == "--remove" ]]; then
+    remove_user "$2"
+fi
+
+# --- Main user provisioning/management logic (if not removing) ---
 
 # Check if configuration file exists
 if [[ ! -f "$USER_CONFIG_FILE" ]]; then
