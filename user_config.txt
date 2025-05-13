@@ -1,0 +1,5 @@
+# username:sudo_privileges:passwordless_sudo:groups:shell
+ansible:yes:yes::/bin/bash
+jane_admin:yes:no:adm,docker:/bin/bash
+testuser:no:no::/bin/false
+service_account:no:no:nogroup:/usr/sbin/nologin 
