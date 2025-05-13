@@ -9,14 +9,22 @@ log_error() { echo -e "\033[31m[ERROR] $1\033[0m"; }
 log_step() { echo -e "\n\033[34m--- $1 ---\033[0m"; }
 
 confirm_action() {
+    # If stdin is not a TTY (e.g. when run via curl|bash), default to 'No' (return 1)
+    # This prevents the script from hanging or looping on "Invalid input".
+    if ! [ -t 0 ]; then
+        # log_warn "Non-interactive mode detected for prompt: '$1'. Defaulting to No."
+        return 1 # Default to No
+    fi
+
+    # Interactive mode (stdin is a TTY)
     while true; do
         read -r -p "$1 [y/N]: " response
         case "$response" in
             [yY][eE][sS]|[yY])
-                return 0
+                return 0 # Yes
                 ;;
-            [nN][oO]|[nN]|"")
-                return 1
+            [nN][oO]|[nN]|"") # No or empty string (default for interactive)
+                return 1 # No
                 ;;
             *)
                 log_warn "Invalid input. Please enter 'y' or 'n'."
@@ -61,34 +69,48 @@ log_step "2. SSH Key Setup for GitHub"
 mkdir -p "$HOME/.ssh"
 chmod 700 "$HOME/.ssh"
 
-SSH_KEY_EXISTS=false
+SHOULD_GENERATE_KEY=false # Default: do not generate a new key
+
 if [ -f "$SSH_KEY_PATH" ] && [ -f "${SSH_KEY_PATH}.pub" ]; then
     log_info "SSH key pair ($SSH_KEY_PATH) already exists."
-    if confirm_action "Do you want to use this existing key?"; then
-        SSH_KEY_EXISTS=true
+    if confirm_action "Do you want to USE this existing key? (Answering 'n' will prompt to generate a new one)"; then
+        log_info "Will use the existing SSH key: $SSH_KEY_PATH."
+        SHOULD_GENERATE_KEY=false
     else
-        if confirm_action "Generate a new key pair (this will overwrite the existing $SSH_KEY_PATH if you proceed)?"; then
-            SSH_KEY_EXISTS=false # Proceed to generate
+        log_warn "You chose NOT to use the existing key: $SSH_KEY_PATH."
+        if confirm_action "Do you want to GENERATE a NEW key pair? (This will overwrite the existing file if it has the same name)"; then
+            log_info "A new SSH key pair will be generated."
+            SHOULD_GENERATE_KEY=true
         else
-            log_info "Using the existing key pair as requested."
-            SSH_KEY_EXISTS=true
+            log_warn "You chose NOT to generate a new key either. Defaulting to attempt using the existing key: $SSH_KEY_PATH."
+            # This path means user said NO to using existing, and NO to generating new.
+            # Safest is to try and use what's there, or the script can't proceed with SSH.
+            SHOULD_GENERATE_KEY=false 
         fi
     fi
+else
+    log_info "SSH key pair $SSH_KEY_PATH not found or incomplete. A new key pair needs to be generated."
+    SHOULD_GENERATE_KEY=true
 fi
 
-if ! $SSH_KEY_EXISTS; then
-    log_info "Generating a new SSH key pair at $SSH_KEY_PATH..."
-    # Remove old keys if they exist and user agreed to overwrite
+if [ "$SHOULD_GENERATE_KEY" = true ]; then # String comparison for boolean flag
+    log_info "Proceeding with SSH key generation for: $SSH_KEY_PATH"
+    # Remove old keys if they exist, as we are generating a new one.
     rm -f "$SSH_KEY_PATH" "${SSH_KEY_PATH}.pub"
     
-    ssh-keygen -t rsa -b 4096 -f "$SSH_KEY_PATH" -N "" -C "$(whoami)@$(hostname)-lab-tools-github"
+    # Simplified comment for ssh-keygen to minimize potential parsing issues with complex $(hostname) outputs
+    KEY_COMMENT="lab_tools_github_$(whoami)"
+    log_info "Generating new 4096-bit RSA SSH key. Press Enter to accept default file location and no passphrase (recommended for automated scripts)."
+    ssh-keygen -t rsa -b 4096 -f "$SSH_KEY_PATH" -N "" -C "$KEY_COMMENT"
     if [ $? -ne 0 ]; then
         log_error "SSH key generation failed."
         exit 1
     fi
-    log_info "New SSH key pair generated successfully."
+    log_info "New SSH key pair generated successfully: $SSH_KEY_PATH"
     chmod 600 "$SSH_KEY_PATH"
     chmod 644 "${SSH_KEY_PATH}.pub"
+else
+    log_info "Skipping SSH key generation. Using existing key: $SSH_KEY_PATH"
 fi
 
 log_step "3. Configuring SSH Agent and SSH Config"
@@ -102,11 +124,19 @@ ssh-add -d "$SSH_KEY_PATH" &>/dev/null
 if ssh-add "$SSH_KEY_PATH"; then
     log_info "SSH key added to the agent."
 else
-    log_error "Failed to add SSH key to the agent. You might need to enter the passphrase if you set one."
-    # Attempt to add again, allowing for passphrase input
-    if ! ssh-add "$SSH_KEY_PATH"; then
-        log_error "Still failed to add SSH key. Please check your key and passphrase."
+    # If ssh-add failed, it might be because the key has a passphrase and we are non-interactive
+    # Or the key file is problematic.
+    if ! [ -t 0 ]; then # Non-interactive
+        log_error "Failed to add SSH key ($SSH_KEY_PATH) to the agent in non-interactive mode."
+        log_error "This key may require a passphrase. Please run this script interactively or ensure the key has no passphrase."
         exit 1
+    else # Interactive, so prompt for passphrase
+        log_error "Failed to add SSH key ($SSH_KEY_PATH) to the agent. It might require a passphrase."
+        if ! ssh-add "$SSH_KEY_PATH"; then # Let ssh-add prompt for passphrase
+            log_error "Still failed to add SSH key. Please check your key and passphrase."
+            exit 1
+        fi
+        log_info "SSH key added to the agent (likely after passphrase)."
     fi
 fi
 
@@ -116,9 +146,15 @@ log_info "Configuring SSH to use this key for $GITHUB_HOST..."
 # Check if entry already exists for this host and identity file
 CONFIG_ENTRY_EXISTS=false
 if [ -f "$SSH_CONFIG_PATH" ]; then
-    if grep -q "Host $GITHUB_HOST" "$SSH_CONFIG_PATH" && grep -q "IdentityFile $SSH_KEY_PATH" "$SSH_CONFIG_PATH"; then
+    # Check for a block that specifies this Host AND this IdentityFile
+    # This is a more specific check to ensure we don't just find any github.com entry
+    if awk -v key="$SSH_KEY_PATH" \
+        'BEGIN{found_host=0; RS=""} 
+         /Host github\.com/ {found_host=1} 
+         found_host && /IdentityFile / && $0 ~ "IdentityFile " key {print "found"; exit}' \
+        "$SSH_CONFIG_PATH" | grep -q "found"; then
         CONFIG_ENTRY_EXISTS=true
-        log_info "SSH config entry for $GITHUB_HOST with $SSH_KEY_PATH already seems to exist."
+        log_info "SSH config entry for Host $GITHUB_HOST using IdentityFile $SSH_KEY_PATH already seems to exist."
     fi
 fi
 
@@ -128,11 +164,6 @@ if ! $CONFIG_ENTRY_EXISTS; then
         cp "$SSH_CONFIG_PATH" "${SSH_CONFIG_PATH}.bak_$(date +%Y%m%d_%H%M%S)"
         log_info "Backed up existing SSH config to ${SSH_CONFIG_PATH}.bak_..."
     fi
-    
-    # Remove any existing config for this specific Host github.com to avoid duplicates before adding new one
-    # This is a bit tricky; for now, we'll just append. A more robust solution would parse and modify.
-    # For simplicity, if the user has a complex config, they might need to adjust manually.
-    # We will add our specific config, ensuring IdentityFile is correctly set.
     
     # Ensure there's a newline at the end of the file if it exists, before appending
     if [ -f "$SSH_CONFIG_PATH" ] && [ -s "$SSH_CONFIG_PATH" ]; then # if file exists and is not empty
@@ -148,19 +179,10 @@ if ! $CONFIG_ENTRY_EXISTS; then
   IdentityFile $SSH_KEY_PATH
   IdentitiesOnly yes"
 
-    # Check if a block for "Host github.com" already exists
-    if grep -Fxq "Host $GITHUB_HOST" "$SSH_CONFIG_PATH"; then
-        log_warn "An 'Host $GITHUB_HOST' block already exists in $SSH_CONFIG_PATH."
-        log_warn "This script will append a new specific entry for $SSH_KEY_PATH."
-        log_warn "You may need to manually review and clean up $SSH_CONFIG_PATH if you have multiple configurations for github.com."
-        echo -e "
-# Added by lab-tools setup script for $SSH_KEY_PATH" >> "$SSH_CONFIG_PATH"
-        echo -e "$DESIRED_CONFIG_BLOCK" >> "$SSH_CONFIG_PATH"
-    else
-        echo -e "
-# Added by lab-tools setup script" >> "$SSH_CONFIG_PATH"
-        echo -e "$DESIRED_CONFIG_BLOCK" >> "$SSH_CONFIG_PATH"
-    fi
+    # Add our specific config block
+    echo -e "\n# Added/Updated by lab-tools setup script for $SSH_KEY_PATH $(date)" >> "$SSH_CONFIG_PATH"
+    echo -e "$DESIRED_CONFIG_BLOCK" >> "$SSH_CONFIG_PATH"
+    
     chmod 600 "$SSH_CONFIG_PATH"
     log_info "SSH config updated/created at $SSH_CONFIG_PATH to use $SSH_KEY_PATH for $GITHUB_HOST."
 else
@@ -173,31 +195,70 @@ log_info "Go to https://github.com/settings/keys and click 'New SSH key'."
 echo -e "\033[36m" # Cyan color for key
 cat "${SSH_KEY_PATH}.pub"
 echo -e "\033[0m" # Reset color
-confirm_action "Press Enter to continue after you've added the key to GitHub (or if it was already added)..."
+
+if ! [ -t 0 ]; then
+    log_warn "Running in non-interactive mode. Will not prompt for GitHub key confirmation."
+    log_warn "Ensure the key is added to GitHub before this script attempts to connect."
+    log_warn "Pausing for 15 seconds to allow time to add the key to GitHub if needed..."
+    sleep 15
+else
+    confirm_action "Press Enter to continue after you've added the key to GitHub (or if it was already added)..."
+fi
 
 log_info "Attempting to connect to GitHub via SSH (ssh -T $GITHUB_HOST)..."
-log_info "If prompted 'Are you sure you want to continue connecting (yes/no/[fingerprint])?', please type 'yes'."
+log_info "If prompted 'Are you sure you want to continue connecting (yes/no/[fingerprint])?', please type 'yes' if in interactive mode."
 
 # Loop to allow user to re-add key and test again
+RETRY_COUNT=0
+MAX_RETRIES=2 # Allow a couple of retries if interactive
+
 while true; do
-    if ssh -T "$GITHUB_HOST"; then
+    # In non-interactive mode, ssh might prompt for host key verification. 
+    # We can try to automate this with StrictHostKeyChecking=no or pre-adding github.com to known_hosts.
+    # For now, we assume if non-interactive, this should ideally pass or fail without hanging.
+    SSH_COMMAND="ssh -o ConnectTimeout=10"
+    if ! [ -t 0 ]; then
+        # Try to automatically accept new host keys if non-interactive.
+        # Note: This has security implications if you don't trust the network.
+        # However, for a fresh setup script, it might be acceptable for github.com.
+        # A more secure way is to pre-populate known_hosts.
+        SSH_COMMAND="ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10"
+    fi
+
+    if $SSH_COMMAND -T "$GITHUB_HOST"; then
         log_info "Successfully authenticated with GitHub!"
         break
     else
-        log_warn "Failed to authenticate with GitHub using the SSH key."
-        log_warn "Please ensure:"
-        log_warn "1. The public key displayed above is correctly added to your GitHub account (https://github.com/settings/keys)."
-        log_warn "2. You accepted the host fingerprint if prompted."
-        log_warn "3. The ssh-agent has the correct key (check 'ssh-add -l')."
-        if confirm_action "Do you want to re-display the public key and try testing the connection again?"; then
+        log_warn "---------------------------------------------------------------------"
+        log_warn "GitHub SSH Authentication Failed!"
+        log_warn "This usually means the public SSH key shown earlier was not correctly"
+        log_warn "added to your GitHub account (https://github.com/settings/keys),"
+        log_warn "or there was an issue with the SSH agent or host key verification."
+        log_warn "---------------------------------------------------------------------"
+        
+        RETRY_COUNT=$((RETRY_COUNT + 1))
+
+        if ! [ -t 0 ] || [ $RETRY_COUNT -gt $MAX_RETRIES ]; then # Non-interactive or max retries reached
+            log_error "GitHub SSH authentication failed. Cannot proceed with cloning the repository."
+            if ! [ -t 0 ]; then
+                log_error "Running in non-interactive mode. Ensure SSH key is on GitHub and host key is accepted/known."
+            else
+                log_error "Max retries reached. Please manually ensure your SSH key is correctly set up."
+            fi
+            exit 1
+        fi
+
+        if confirm_action "Would you like to: \n  1. Re-display the public key (so you can add/verify it on GitHub) \n  2. And then try testing the SSH connection to GitHub again? (Attempt ${RETRY_COUNT}/${MAX_RETRIES}) \nEnter 'y' to retry, or 'n' to exit the script."; then
+            log_info "Okay, let's try again."
             log_info "Public key:"
             echo -e "\033[36m"
             cat "${SSH_KEY_PATH}.pub"
             echo -e "\033[0m"
-            confirm_action "Press Enter to try testing the connection again..."
-            continue
+            log_info "For troubleshooting, current keys in ssh-agent (-L shows public keys):\n$(ssh-add -L 2>/dev/null || echo 'ssh-agent not running or no keys added')"
+            confirm_action "Press Enter when you are ready to retry the SSH connection test to GitHub..."
         else
-            log_error "Cannot proceed with cloning without successful GitHub SSH authentication."
+            log_error "GitHub SSH authentication failed. Cannot proceed with cloning the repository."
+            log_error "Please manually ensure your SSH key is correctly set up for GitHub and re-run the script later."
             exit 1
         fi
     fi
