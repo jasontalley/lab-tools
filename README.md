@@ -53,6 +53,24 @@ Available Scripts
     *   The list of packages to install can be customized by editing the `COMMON_PACKAGES` array within the script.
     *   Attempts to configure `unattended-upgrades` and enable/start `fail2ban`.
 
+### 5. `setup_ansible_user.sh`
+
+*   **Purpose:** Creates a dedicated user named `ansible` with passwordless `sudo` privileges. It then automatically imports SSH public keys for this user from a specified GitHub account (currently hardcoded to `jasontalley`) using `ssh-import-id`. This is useful for quickly setting up a machine to be managed by Ansible.
+*   **Usage (on a new machine, as root or with sudo):**
+    *   Directly from GitHub:
+        `curl -sSL https://raw.githubusercontent.com/jasontalley/lab-tools/main/setup_ansible_user.sh | sudo bash`
+    *   Alternatively, download, inspect, and run:
+        1.  `curl -O https://raw.githubusercontent.com/jasontalley/lab-tools/main/setup_ansible_user.sh`
+        2.  `chmod +x setup_ansible_user.sh`
+        3.  `sudo ./setup_ansible_user.sh`
+*   **Notes:**
+    *   Must be run as root or with `sudo`.
+    *   The script attempts to install `ssh-import-id` if it's not found (supports `apt`, `yum`, `dnf`).
+    *   The GitHub username (`jasontalley`) for key import is currently hardcoded in the script.
+    *   Creates the `ansible` user, its home directory, and sets `/bin/bash` as the shell.
+    *   Manages the `~ansible/.ssh` directory and `~ansible/.ssh/authorized_keys` file.
+    *   Sets up a sudoers file at `/etc/sudoers.d/ansible_nopasswd`.
+
 General Recommendations
 -----------------------
 
